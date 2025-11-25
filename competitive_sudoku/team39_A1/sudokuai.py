@@ -24,13 +24,8 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
 
     def __init__(self):
         super().__init__()
-        self.legal_moves_cache = None   # optional cache (currently unused)
 
-    # =========================
-    #   BASIC MOVE GENERATION
-    # =========================
-
-    def _is_valid_move(self, game_state: GameState, square: tuple, num: int) -> bool:
+    def _valid_move(self, game_state: GameState, square: tuple, num: int) -> bool:
         """
         Check whether (square, num) is a legal move for the current player,
         ignoring the oracle / taboo-from-unsolvable part.
@@ -89,14 +84,10 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         moves = []
         for square in playable_squares:
             for value in range(1, N + 1):
-                if self._is_valid_move(game_state, square, value):
+                if self._valid_move(game_state, square, value):
                     moves.append(Move(square, value))
 
         return moves
-
-    # =========================
-    #   STATE SIMULATION
-    # =========================
 
     def _neighbors_of(self, state: GameState, square: tuple):
         """
@@ -112,7 +103,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                 if 0 <= nr < N and 0 <= nc < N:
                     yield (nr, nc)
 
-    def _regions_completed_by_move(self, board: SudokuBoard, square: tuple) -> int:
+    def _regions_completed(self, board: SudokuBoard, square: tuple) -> int:
         """
         How many regions (row, column, block) are completed by this move?
         Assumes the board ALREADY contains the move at 'square'.
@@ -145,7 +136,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         completed = sum([row_complete, col_complete, block_complete])
         return completed
 
-    def _points_for_completed_regions(self, completed: int) -> int:
+    def _points_calculation(self, completed: int) -> int:
         """
         Convert number of completed regions into points, as per rules:
           0 -> 0, 1 -> 1, 2 -> 3, 3 -> 7
@@ -169,18 +160,18 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         new_state = copy.deepcopy(state)
         current_player = new_state.current_player
 
-        # 1) Place the value on the board
+        # Place the value on the board
         new_state.board.put(move.square, move.value)
 
-        # 2) Update score according to completed regions
-        completed = self._regions_completed_by_move(new_state.board, move.square)
-        gained = self._points_for_completed_regions(completed)
+        # Update score according to completed regions
+        completed = self._regions_completed(new_state.board, move.square)
+        gained = self._points_calculation(completed)
         new_state.scores[current_player - 1] += gained
 
-        # 3) Record move
+        # Record move
         new_state.moves.append(move)
 
-        # 4) Update occupied squares
+        # Update occupied squares
         if current_player == 1:
             if new_state.occupied_squares1 is None:
                 new_state.occupied_squares1 = []
@@ -190,7 +181,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                 new_state.occupied_squares2 = []
             new_state.occupied_squares2.append(move.square)
 
-        # 5) Update allowed squares by expanding from the played move
+        # Update allowed squares by expanding from the played move
         neighbors = [sq for sq in self._neighbors_of(new_state, move.square)
                      if new_state.board.get(sq) == SudokuBoard.empty]
 
@@ -205,7 +196,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             new_state.allowed_squares2.extend(neighbors)
             new_state.allowed_squares2 = list(set(new_state.allowed_squares2))
 
-        # 6) Clean allowed squares: remove filled cells for both players
+        # Clean allowed squares: remove filled cells for both players
         if getattr(new_state, "allowed_squares1", None) is not None:
             new_state.allowed_squares1 = [
                 sq for sq in new_state.allowed_squares1
@@ -217,14 +208,10 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                 if new_state.board.get(sq) == SudokuBoard.empty
             ]
 
-        # 7) Switch current player
+        # Switch current player
         new_state.current_player = 3 - current_player
 
         return new_state
-
-    # =========================
-    #   EVALUATION FUNCTION
-    # =========================
 
     def evaluate_state(self, state: GameState) -> float:
         """
@@ -244,10 +231,6 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         # Simple heuristic: score difference dominates, territory is secondary
         value = 10.0 * score_diff + 0.5 * territory_diff
         return value
-
-    # =========================
-    #   MINIMAX + ALPHA-BETA
-    # =========================
 
     def _minimax(self, state: GameState, depth: int, alpha: float, beta: float):
         """
@@ -292,10 +275,6 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                     break  # alpha cut-off
             return best_val, best_move
 
-    # =========================
-    #   TOP-LEVEL ENTRY POINT
-    # =========================
-
     def compute_best_move(self, game_state: GameState) -> None:
         """
         Anytime-style:
@@ -312,15 +291,14 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             # No legal moves -> framework will handle skip or loss
             return
 
-        # 1) Fallback: random safe move
+        # Fallback: random safe move
         best_move = random.choice(legal_moves)
         self.propose_move(best_move)
 
-        # 2) Minimax search on a copy of the state
+        # Minimax search on a copy of the state
         try:
             root_state = copy.deepcopy(game_state)
-            # You can tweak the depth here (2 is usually safe, 3 is riskier)
-            depth = 3
+            depth = 3 # Depth 3 seems to be working better
             value, move = self._minimax(root_state, depth, float("-inf"), float("inf"))
             logging.info(f"Minimax value {value} for player {game_state.current_player}")
 
@@ -330,7 +308,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         except Exception as e:
             logging.error(f"Error in minimax: {e}")
 
-        # 3) Anytime behaviour: keep re-proposing best_move
+        # Re-proposing best_move
         while True:
             time.sleep(0.2)
             self.propose_move(best_move)
