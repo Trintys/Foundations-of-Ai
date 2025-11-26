@@ -68,27 +68,6 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                     return False
 
         return True
-    def _move_heuristic(self, state: GameState, move: Move) -> int:
-        """
-        Simple heuristic for move ordering:
-        - Fewer allowed moves for the square → higher priority
-        - Completing more regions → higher priority
-        """
-        row, col = move.square
-        board = state.board
-
-        # Count empty neighbors (less empty = more constrained)
-        empty_neighbors = sum(
-            1 for r, c in self._neighbors_of(state, move.square)
-            if board.get((r, c)) == SudokuBoard.empty
-        )
-
-        # Number of regions completed by this move
-        completed = self._regions_completed_by_move(board, move.square)
-
-        # Lower value = higher priority in sort
-        return empty_neighbors - 10*completed
-
 
     def generate_legal_moves(self, game_state: GameState):
         """
@@ -262,20 +241,16 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         Returns: (value, best_move)
         """
         legal_moves = self.generate_legal_moves(state)
-        # move ordering (should boost the performance)
-        legal_moves.sort(key=lambda m: self._move_heuristic(state, m))
-        
+
         # Terminal or depth limit
         if depth == 0 or not legal_moves:
             return self.evaluate_state(state), None
 
         maximizing = (state.current_player == 1)
 
-        best_move = None
-
         if maximizing:
             best_val = float("-inf")
-            
+            best_move = None
             for move in legal_moves:
                 child = self._apply_move(state, move)
                 val, _ = self._minimax(child, depth - 1, alpha, beta)
@@ -288,7 +263,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             return best_val, best_move
         else:
             best_val = float("inf")
-            
+            best_move = None
             for move in legal_moves:
                 child = self._apply_move(state, move)
                 val, _ = self._minimax(child, depth - 1, alpha, beta)
