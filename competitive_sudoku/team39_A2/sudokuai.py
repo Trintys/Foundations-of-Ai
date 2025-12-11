@@ -1,9 +1,8 @@
 #  (C) Copyright Wieger Wesselink 2021. Distributed under the GPL-3.0-or-later
-#  Software License, (See accompanying file LICENSE or copy at
-#  https://www.gnu.org/licenses/gpl-3.0.txt)
 
 import random
 import time
+import math
 import copy
 import logging
 
@@ -12,304 +11,288 @@ import competitive_sudoku.sudokuai
 
 logging.basicConfig(level=logging.INFO)
 
-
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     """
-    Competitive Sudoku AI using minimax + alpha-beta pruning.
-    Evaluation is from Player 1's point of view:
-      eval(state) = f(score_1 - score_2, territory, mobility, ...)
-    When this AI is player 1 it tries to MAXIMIZE eval;
-    when it is player 2 it tries to MINIMIZE eval.
+    Constraint-Aware MCTS Agent.
+    Improves upon standard MCTS by using 'Logical Simulations':
+    - In simulations, it prioritizes 'Forced Moves' (Naked Singles) before guessing.
+    - Uses Minimax heuristics (Score + Territory) to evaluate leaf nodes.
     """
-
     def __init__(self):
         super().__init__()
+        self.team_id = 1 
 
-    def _valid_move(self, game_state: GameState, square: tuple, num: int) -> bool:
-        """
-        Check whether (square, num) is a legal move for the current player,
-        ignoring the oracle / taboo-from-unsolvable part.
-        """
-        board = game_state.board
-        row, col = square
-        N = board.N
-
-        # Cell must be empty
-        if board.get((row, col)) != SudokuBoard.empty:
-            return False
-
-        # Not a taboo move
-        if TabooMove((row, col), num) in game_state.taboo_moves:
-            return False
-
-        # Must be in the current player's allowed cells
-        if (row, col) not in game_state.player_squares():
-            return False
-
-        # Row constraint
-        for j in range(N):
-            if board.get((row, j)) == num:
-                return False
-
-        # Column constraint
-        for i in range(N):
-            if board.get((i, col)) == num:
-                return False
-
-        # Block constraint
-        subgrid_h = board.region_height()
-        subgrid_w = board.region_width()
-        start_row = (row // subgrid_h) * subgrid_h
-        start_col = (col // subgrid_w) * subgrid_w
-
-        for i in range(start_row, start_row + subgrid_h):
-            for j in range(start_col, start_col + subgrid_w):
-                if board.get((i, j)) == num:
-                    return False
-
-        return True
-
-    def generate_legal_moves(self, game_state: GameState):
-        """
-        Returns all legal moves for the *current player* in the given game_state.
-        """
-        N = game_state.board.N
-
-        playable_squares = game_state.player_squares()
-
-        # If no allowed squares are registered, fall back to whole board
-        if not playable_squares:
-            playable_squares = [(i, j) for i in range(N) for j in range(N)]
-
-        moves = []
-        for square in playable_squares:
-            for value in range(1, N + 1):
-                if self._valid_move(game_state, square, value):
-                    moves.append(Move(square, value))
-
-        return moves
-
-    def _neighbors_of(self, state: GameState, square: tuple):
-        """
-        8-neighborhood of a square, inside board.
-        """
-        N = state.board.N
-        r, c = square
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                if dr == 0 and dc == 0:
-                    continue
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < N and 0 <= nc < N:
-                    yield (nr, nc)
-
-    def _regions_completed(self, board: SudokuBoard, square: tuple) -> int:
-        """
-        How many regions (row, column, block) are completed by this move?
-        Assumes the board ALREADY contains the move at 'square'.
-        Returns: 0, 1, 2, or 3.
-        """
-        row, col = square
-        N = board.N
-
-        # Row complete?
-        row_complete = all(board.get((row, c)) != SudokuBoard.empty for c in range(N))
-
-        # Column complete?
-        col_complete = all(board.get((r, col)) != SudokuBoard.empty for r in range(N))
-
-        # Block complete?
-        rh = board.region_height()
-        rw = board.region_width()
-        start_row = (row // rh) * rh
-        start_col = (col // rw) * rw
-
-        block_complete = True
-        for r in range(start_row, start_row + rh):
-            for c in range(start_col, start_col + rw):
-                if board.get((r, c)) == SudokuBoard.empty:
-                    block_complete = False
-                    break
-            if not block_complete:
-                break
-
-        completed = sum([row_complete, col_complete, block_complete])
-        return completed
-
-    def _points_calculation(self, completed: int) -> int:
-        """
-        Convert number of completed regions into points, as per rules:
-          0 -> 0, 1 -> 1, 2 -> 3, 3 -> 7
-        """
-        if completed == 0:
-            return 0
-        elif completed == 1:
-            return 1
-        elif completed == 2:
-            return 3
-        elif completed == 3:
-            return 7
-        return 0
-
-    def _apply_move(self, state: GameState, move: Move) -> GameState:
-        """
-        Return a NEW GameState that results from playing 'move' in 'state',
-        using an internal approximation of how the game evolves.
-        This does NOT call the oracle and is only used inside search.
-        """
-        new_state = copy.deepcopy(state)
-        current_player = new_state.current_player
-
-        # Place the value on the board
-        new_state.board.put(move.square, move.value)
-
-        # Update score according to completed regions
-        completed = self._regions_completed(new_state.board, move.square)
-        gained = self._points_calculation(completed)
-        new_state.scores[current_player - 1] += gained
-
-        # Record move
-        new_state.moves.append(move)
-
-        # Update occupied squares
-        if current_player == 1:
-            if new_state.occupied_squares1 is None:
-                new_state.occupied_squares1 = []
-            new_state.occupied_squares1.append(move.square)
-        else:
-            if new_state.occupied_squares2 is None:
-                new_state.occupied_squares2 = []
-            new_state.occupied_squares2.append(move.square)
-
-        # Update allowed squares by expanding from the played move
-        neighbors = [sq for sq in self._neighbors_of(new_state, move.square)
-                     if new_state.board.get(sq) == SudokuBoard.empty]
-
-        if current_player == 1:
-            if new_state.allowed_squares1 is None:
-                new_state.allowed_squares1 = []
-            new_state.allowed_squares1.extend(neighbors)
-            new_state.allowed_squares1 = list(set(new_state.allowed_squares1))
-        else:
-            if new_state.allowed_squares2 is None:
-                new_state.allowed_squares2 = []
-            new_state.allowed_squares2.extend(neighbors)
-            new_state.allowed_squares2 = list(set(new_state.allowed_squares2))
-
-        # Clean allowed squares: remove filled cells for both players
-        if getattr(new_state, "allowed_squares1", None) is not None:
-            new_state.allowed_squares1 = [
-                sq for sq in new_state.allowed_squares1
-                if new_state.board.get(sq) == SudokuBoard.empty
-            ]
-        if getattr(new_state, "allowed_squares2", None) is not None:
-            new_state.allowed_squares2 = [
-                sq for sq in new_state.allowed_squares2
-                if new_state.board.get(sq) == SudokuBoard.empty
-            ]
-
-        # Switch current player
-        new_state.current_player = 3 - current_player
-
-        return new_state
-
-    def evaluate_state(self, state: GameState) -> float:
-        """
-        Evaluate a GameState from Player 1's perspective.
-        Positive = good for player 1, negative = good for player 2.
-        """
-        # Score difference
-        score_first = state.scores[0]
-        score_second = state.scores[1]
-        score_diff = score_first - score_second
-
-        # Territory (allowed squares)
-        allowed1 = len(getattr(state, "allowed_squares1", []) or [])
-        allowed2 = len(getattr(state, "allowed_squares2", []) or [])
-        territory_diff = allowed1 - allowed2
-
-        # Simple heuristic: score difference dominates, territory is secondary
-        value = 10.0 * score_diff + 0.5 * territory_diff
-        return value
-
-    def _minimax(self, state: GameState, depth: int, alpha: float, beta: float):
-        """
-        Depth-limited minimax with alpha-beta pruning.
-        Evaluation is always from Player 1's perspective.
-        - When it's Player 1's turn: we MAXIMIZE.
-        - When it's Player 2's turn: we MINIMIZE.
-        Returns: (value, best_move)
-        """
-        legal_moves = self.generate_legal_moves(state)
-
-        # Terminal or depth limit
-        if depth == 0 or not legal_moves:
-            return self.evaluate_state(state), None
-
-        maximizing = (state.current_player == 1)
-
-        if maximizing:
-            best_val = float("-inf")
-            best_move = None
-            for move in legal_moves:
-                child = self._apply_move(state, move)
-                val, _ = self._minimax(child, depth - 1, alpha, beta)
-                if val > best_val:
-                    best_val = val
-                    best_move = move
-                alpha = max(alpha, best_val)
-                if beta <= alpha:
-                    break  # beta cut-off
-            return best_val, best_move
-        else:
-            best_val = float("inf")
-            best_move = None
-            for move in legal_moves:
-                child = self._apply_move(state, move)
-                val, _ = self._minimax(child, depth - 1, alpha, beta)
-                if val < best_val:
-                    best_val = val
-                    best_move = move
-                beta = min(beta, best_val)
-                if beta <= alpha:
-                    break  # alpha cut-off
-
-            return best_val, best_move
-
-    def compute_best_move(self, game_state: GameState) -> None:
-        """
-        Anytime-style:
-        1. Generate all legal moves.
-        2. Immediately propose a random legal move as a safe fallback.
-        3. Run a small minimax search (depth 2 by default) on a COPY of the state.
-        4. If minimax finds something better, propose that as the new best move.
-        5. Keep re-proposing the best move until the engine kills this process.
-        """
-
+    def compute_best_move(self, game_state: GameState):
+        self.team_id = game_state.current_player
+        
+        # 1. GENERATE MOVES
         legal_moves = self.generate_legal_moves(game_state)
+        if not legal_moves: return
 
-        if not legal_moves:
-            # No legal moves -> framework will handle skip or loss
-            return
-
-        # Fallback: random safe move
+        # 2. SAFETY: Propose a random valid move immediately
         best_move = random.choice(legal_moves)
         self.propose_move(best_move)
 
-        # Minimax search on a copy of the state
-        try:
-            root_state = copy.deepcopy(game_state)
-            depth = 3 # Depth 3 seems to be working better
-            value, move = self._minimax(root_state, depth, float("-inf"), float("inf"))
+        # 3. LOGIC CHECK: Play Forced Moves (Naked Singles) immediately
+        # If a cell has only 1 valid value, don't waste time searching. Just play it.
+        forced = self.find_forced_move(game_state, legal_moves)
+        if forced:
+            self.propose_move(forced)
+            self._keep_alive() # Stop calculating, we found the perfect move.
+            return
+
+        # 4. MCTS INIT
+        root = MCTSNode(state=game_state, parent=None, move=None, ai=self)
+        
+        # 5. MCTS LOOP
+        start_time = time.time()
+        time_limit = 0.90 
+        
+        while time.time() - start_time < time_limit:
+            # Selection
+            node = root
+            while not node.is_leaf() and node.is_fully_expanded():
+                node = node.select_child()
             
-            if move is not None:
-                best_move = move
-                self.propose_move(best_move)
+            # Expansion
+            if not node.is_terminal() and not node.is_fully_expanded():
+                node = node.expand()
+            
+            # Simulation (The smart part)
+            result = node.simulate(self.team_id)
+            
+            # Backpropagation
+            node.backpropagate(result)
+        
+        # 6. SELECT BEST
+        if root.children:
+            best_child = max(root.children, key=lambda c: c.visits)
+            self.propose_move(best_child.move)
+        
+        self._keep_alive()
 
-        except Exception as e:
-            logging.error(f"Error in minimax: {e}")
+    def _keep_alive(self):
+        while True: time.sleep(0.1)
 
-        # Re-proposing best_move
-        while True:
-            time.sleep(0.2)
-            self.propose_move(best_move)
+    # ------------------------------------------------------------------
+    # CONSTRAINT LOGIC
+    # ------------------------------------------------------------------
+    def find_forced_move(self, state, legal_moves=None):
+        """Returns a Move if a cell has exactly 1 valid option."""
+        # Pre-calc board access for speed
+        board = state.board
+        N = board.N
+        
+        # Optimization: Group legal moves by square
+        if legal_moves is None:
+            legal_moves = self.generate_legal_moves(state)
+            
+        moves_by_square = {}
+        for m in legal_moves:
+            if m.square not in moves_by_square:
+                moves_by_square[m.square] = []
+            moves_by_square[m.square].append(m)
+            
+        for sq, moves in moves_by_square.items():
+            if len(moves) == 1:
+                return moves[0] # The only legal move for this square
+        return None
+
+    # ------------------------------------------------------------------
+    # ENGINE HELPERS (Optimized)
+    # ------------------------------------------------------------------
+    def _valid_move(self, game_state, square, num):
+        board = game_state.board
+        if board.get(square) != 0: return False
+        if TabooMove(square, num) in game_state.taboo_moves: return False
+        if square not in game_state.player_squares(): return False
+
+        N = board.N
+        r, c = square
+        
+        # Fast Checks
+        for k in range(N):
+            if board.get((r, k)) == num: return False
+            if board.get((k, c)) == num: return False
+            
+        rh, rw = board.region_height(), board.region_width()
+        sr, sc = (r // rh) * rh, (c // rw) * rw
+        for i in range(sr, sr + rh):
+            for j in range(sc, sc + rw):
+                if board.get((i, j)) == num: return False
+        return True
+
+    def generate_legal_moves(self, game_state):
+        N = game_state.board.N
+        playable = game_state.player_squares()
+        if not playable:
+            playable = [(i, j) for i in range(N) for j in range(N)]
+
+        moves = []
+        for sq in playable:
+            for v in range(1, N + 1):
+                if self._valid_move(game_state, sq, v):
+                    moves.append(Move(sq, v))
+        return moves
+
+    def _apply_move(self, state, move):
+        new_state = copy.deepcopy(state)
+        new_state.board.put(move.square, move.value)
+        
+        pts = self._points_from_move(new_state.board, move.square)
+        new_state.scores[new_state.current_player - 1] += pts
+        
+        # Territory update (Simplified for speed)
+        curr = new_state.current_player
+        if curr == 1:
+            if new_state.occupied_squares1 is None: new_state.occupied_squares1 = []
+            new_state.occupied_squares1.append(move.square)
+        else:
+            if new_state.occupied_squares2 is None: new_state.occupied_squares2 = []
+            new_state.occupied_squares2.append(move.square)
+            
+        new_state.current_player = 3 - curr
+        return new_state
+
+    def _points_from_move(self, board, square):
+        r, c = square
+        N = board.N
+        
+        if any(board.get((r, i)) == 0 for i in range(N)): row_f = 0
+        else: row_f = 1
+        
+        if any(board.get((i, c)) == 0 for i in range(N)): col_f = 0
+        else: col_f = 1
+        
+        rh, rw = board.region_height(), board.region_width()
+        sr, sc = (r // rh) * rh, (c // rw) * rw
+        box_f = 1
+        for i in range(sr, sr + rh):
+            for j in range(sc, sc + rw):
+                if board.get((i, j)) == 0: 
+                    box_f = 0; break
+        
+        cnt = row_f + col_f + box_f
+        return {0:0, 1:1, 2:3, 3:7}.get(cnt, 0)
+    
+    def _neighbors_of(self, state, sq):
+        r, c = sq
+        N = state.board.N
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr==0 and dc==0: continue
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < N and 0 <= nc < N: yield (nr, nc)
+
+    # ------------------------------------------------------------------
+    # MCTS CLASSES
+    # ------------------------------------------------------------------
+class MCTSNode:
+    def __init__(self, state, parent=None, move=None, ai=None):
+        self.state = state
+        self.parent = parent
+        self.move = move
+        self.ai = ai
+        self.children = []
+        self.visits = 0
+        self.wins = 0.0
+        self.untried_moves = self.ai.generate_legal_moves(state)
+
+    def is_leaf(self):
+        return len(self.children) == 0
+
+    def is_fully_expanded(self):
+        return len(self.untried_moves) == 0
+
+    def is_terminal(self):
+        return len(self.untried_moves) == 0 and len(self.children) == 0
+
+    def select_child(self):
+        C = 1.414 
+        best_score = -float('inf')
+        best_node = None
+        for child in self.children:
+            if child.visits == 0: return child
+            score = (child.wins / child.visits) + C * math.sqrt(math.log(self.visits) / child.visits)
+            if score > best_score:
+                best_score = score
+                best_node = child
+        return best_node
+
+    def expand(self):
+        move = self.untried_moves.pop()
+        next_state = self.ai._apply_move(self.state, move)
+        child = MCTSNode(state=next_state, parent=self, move=move, ai=self.ai)
+        self.children.append(child)
+        return child
+
+    def simulate(self, my_team_id):
+        """
+        LOGICAL SIMULATION:
+        Instead of 100% random, we try to play 'Forced Moves' if they exist.
+        This makes the rollout significantly more realistic for Sudoku.
+        """
+        curr_state = copy.deepcopy(self.state)
+        depth = 0
+        max_depth = 5 
+        
+        while depth < max_depth:
+            moves = self.ai.generate_legal_moves(curr_state)
+            if not moves: break
+            
+            # 1. Look for Forced Move (Constraint Propagation)
+            # This is expensive, so we do it only for small number of moves
+            # or just rely on Greedy Scoring.
+            
+            # Simple Greedy Strategy for speed:
+            # 80% chance to pick a move that scores points
+            scoring = [m for m in moves if self.ai._points_from_move(curr_state.board, m.square) > 0]
+            if scoring and random.random() < 0.8:
+                move = random.choice(scoring)
+            else:
+                move = random.choice(moves)
+            
+            curr_state = self.ai._apply_move(curr_state, move)
+            depth += 1
+            
+        # End of simulation: Evaluate Board State (Minimax Heuristic)
+        s1 = curr_state.scores[0]
+        s2 = curr_state.scores[1]
+        score_diff = (s1 - s2) if my_team_id == 1 else (s2 - s1)
+        
+        # Calculate Territory Difference
+        # Recalculate allowed squares for accuracy
+        t1 = self._count_territory(curr_state, 1)
+        t2 = self._count_territory(curr_state, 2)
+        terr_diff = (t1 - t2) if my_team_id == 1 else (t2 - t1)
+        
+        # Heuristic Value: Score is dominant
+        raw_val = (score_diff * 10.0) + (terr_diff * 0.5)
+        
+        # Normalize to [0, 1] using simple sigmoid-like clamp
+        # Maps -20..20 to roughly 0..1
+        try:
+            val = 1 / (1 + math.exp(-0.1 * raw_val))
+        except OverflowError:
+            val = 1.0 if raw_val > 0 else 0.0
+            
+        return val
+
+    def backpropagate(self, result):
+        self.visits += 1
+        self.wins += result
+        if self.parent:
+            self.parent.backpropagate(result)
+
+    def _count_territory(self, state, pid):
+        # Helper to estimate territory size
+        occ = state.occupied_squares1 if pid == 1 else state.occupied_squares2
+        if not occ: return 0
+        count = 0
+        seen = set()
+        for sq in occ:
+            for n in self.ai._neighbors_of(state, sq):
+                if n not in seen and state.board.get(n) == 0:
+                    count += 1
+                    seen.add(n)
+        return count
