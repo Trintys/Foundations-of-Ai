@@ -1,4 +1,6 @@
 #  (C) Copyright Wieger Wesselink 2021. Distributed under the GPL-3.0-or-later
+#  Software License, (See accompanying file LICENSE or copy at
+#  https://www.gnu.org/licenses/gpl-3.0.txt)
 
 import random
 import time
@@ -25,46 +27,35 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     def compute_best_move(self, game_state: GameState):
         self.team_id = game_state.current_player
         
-        # 1. GENERATE MOVES
         legal_moves = self.generate_legal_moves(game_state)
         if not legal_moves: return
 
-        # 2. SAFETY: Propose a random valid move immediately
         best_move = random.choice(legal_moves)
         self.propose_move(best_move)
 
-        # 3. LOGIC CHECK: Play Forced Moves (Naked Singles) immediately
-        # If a cell has only 1 valid value, don't waste time searching. Just play it.
         forced = self.find_forced_move(game_state, legal_moves)
         if forced:
             self.propose_move(forced)
             self._keep_alive() # Stop calculating, we found the perfect move.
             return
 
-        # 4. MCTS INIT
         root = MCTSNode(state=game_state, parent=None, move=None, ai=self)
         
-        # 5. MCTS LOOP
         start_time = time.time()
-        time_limit = 0.90 
+        time_limit = 0.98 
         
         while time.time() - start_time < time_limit:
-            # Selection
             node = root
             while not node.is_leaf() and node.is_fully_expanded():
                 node = node.select_child()
             
-            # Expansion
             if not node.is_terminal() and not node.is_fully_expanded():
                 node = node.expand()
             
-            # Simulation (The smart part)
             result = node.simulate(self.team_id)
             
-            # Backpropagation
             node.backpropagate(result)
         
-        # 6. SELECT BEST
         if root.children:
             best_child = max(root.children, key=lambda c: c.visits)
             self.propose_move(best_child.move)
@@ -74,16 +65,11 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     def _keep_alive(self):
         while True: time.sleep(0.1)
 
-    # ------------------------------------------------------------------
-    # CONSTRAINT LOGIC
-    # ------------------------------------------------------------------
     def find_forced_move(self, state, legal_moves=None):
         """Returns a Move if a cell has exactly 1 valid option."""
-        # Pre-calc board access for speed
         board = state.board
         N = board.N
         
-        # Optimization: Group legal moves by square
         if legal_moves is None:
             legal_moves = self.generate_legal_moves(state)
             
@@ -95,12 +81,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             
         for sq, moves in moves_by_square.items():
             if len(moves) == 1:
-                return moves[0] # The only legal move for this square
+                return moves[0]
         return None
 
-    # ------------------------------------------------------------------
-    # ENGINE HELPERS (Optimized)
-    # ------------------------------------------------------------------
     def _valid_move(self, game_state, square, num):
         board = game_state.board
         if board.get(square) != 0: return False
@@ -110,7 +93,6 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         N = board.N
         r, c = square
         
-        # Fast Checks
         for k in range(N):
             if board.get((r, k)) == num: return False
             if board.get((k, c)) == num: return False
@@ -142,7 +124,6 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         pts = self._points_from_move(new_state.board, move.square)
         new_state.scores[new_state.current_player - 1] += pts
         
-        # Territory update (Simplified for speed)
         curr = new_state.current_player
         if curr == 1:
             if new_state.occupied_squares1 is None: new_state.occupied_squares1 = []
@@ -184,9 +165,6 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                 nr, nc = r+dr, c+dc
                 if 0 <= nr < N and 0 <= nc < N: yield (nr, nc)
 
-    # ------------------------------------------------------------------
-    # MCTS CLASSES
-    # ------------------------------------------------------------------
 class MCTSNode:
     def __init__(self, state, parent=None, move=None, ai=None):
         self.state = state
@@ -240,12 +218,6 @@ class MCTSNode:
             moves = self.ai.generate_legal_moves(curr_state)
             if not moves: break
             
-            # 1. Look for Forced Move (Constraint Propagation)
-            # This is expensive, so we do it only for small number of moves
-            # or just rely on Greedy Scoring.
-            
-            # Simple Greedy Strategy for speed:
-            # 80% chance to pick a move that scores points
             scoring = [m for m in moves if self.ai._points_from_move(curr_state.board, m.square) > 0]
             if scoring and random.random() < 0.8:
                 move = random.choice(scoring)
@@ -255,22 +227,16 @@ class MCTSNode:
             curr_state = self.ai._apply_move(curr_state, move)
             depth += 1
             
-        # End of simulation: Evaluate Board State (Minimax Heuristic)
         s1 = curr_state.scores[0]
         s2 = curr_state.scores[1]
         score_diff = (s1 - s2) if my_team_id == 1 else (s2 - s1)
         
-        # Calculate Territory Difference
-        # Recalculate allowed squares for accuracy
         t1 = self._count_territory(curr_state, 1)
         t2 = self._count_territory(curr_state, 2)
         terr_diff = (t1 - t2) if my_team_id == 1 else (t2 - t1)
         
-        # Heuristic Value: Score is dominant
         raw_val = (score_diff * 10.0) + (terr_diff * 0.5)
         
-        # Normalize to [0, 1] using simple sigmoid-like clamp
-        # Maps -20..20 to roughly 0..1
         try:
             val = 1 / (1 + math.exp(-0.1 * raw_val))
         except OverflowError:
@@ -285,7 +251,6 @@ class MCTSNode:
             self.parent.backpropagate(result)
 
     def _count_territory(self, state, pid):
-        # Helper to estimate territory size
         occ = state.occupied_squares1 if pid == 1 else state.occupied_squares2
         if not occ: return 0
         count = 0
