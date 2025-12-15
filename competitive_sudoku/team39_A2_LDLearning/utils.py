@@ -1,4 +1,4 @@
-import sys, os
+import random, sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from competitive_sudoku.sudoku import GameState, Move, SudokuBoard, TabooMove
@@ -6,13 +6,11 @@ import competitive_sudoku.sudokuai
 
 def display_board(game_state: GameState):
     """
-    Prints the Sudoku board with distinctions:
-    - X  : occupied by player 1
-    - O  : occupied by player 2
-    - .  : empty but not allowed
-    - 1  : empty & allowed for player 1
-    - 2  : empty & allowed for player 2
-    - 3  : empty & allowed for both
+    Prints the Sudoku board:
+    - Values are shown in each cell
+    - Player 1 moves have '-' suffix
+    - Player 2 moves have '+' suffix
+    - Empty cells are printed as '.'
     """
     N = game_state.board.N
     board = game_state.board
@@ -21,27 +19,17 @@ def display_board(game_state: GameState):
         for c in range(N):
             cell = board.get((r, c))
             if cell != board.empty:
-                # Determine which player owns the cell
                 if (r, c) in game_state.occupied_squares1:
-                    row_display.append(f"X")  # Player 1
+                    row_display.append(f"{cell}-")  # Player 1
                 elif (r, c) in game_state.occupied_squares2:
-                    row_display.append(f"O")  # Player 2
+                    row_display.append(f"{cell}+")  # Player 2
                 else:
-                    row_display.append(f"{cell}")  # Already filled (fallback)
+                    row_display.append(f"{cell}")   # Pre-filled or fallback
             else:
-                # Empty cell
-                a1 = (r, c) in game_state.allowed_squares1
-                a2 = (r, c) in game_state.allowed_squares2
-                if a1 and a2:
-                    row_display.append("3")
-                elif a1:
-                    row_display.append("1")
-                elif a2:
-                    row_display.append("2")
-                else:
-                    row_display.append(".")
+                row_display.append(".")  # Empty cell
         print(" ".join(row_display))
     print("\n")
+
 
 # --- Compute incremental points according to completed regions ---
 def count_completed_regions(board: SudokuBoard, square: tuple, region_h: int, region_w: int) -> int:
@@ -57,8 +45,83 @@ def count_completed_regions(board: SudokuBoard, square: tuple, region_h: int, re
     # Check block/region
     region_r = (r // region_h) * region_h
     region_c = (c // region_w) * region_w
-    block_cells = [(region_r + i, region_c + j) for i in range(region_h) for j in range(region_w)]
+
+    block_cells = []
+    for i in range(region_h):
+        for j in range(region_w):
+            row_idx = region_r + i
+            col_idx = region_c + j
+            if row_idx < board.N and col_idx < board.N:  # <-- clip to board size
+                block_cells.append((row_idx, col_idx))
+
     if all(board.get(cell) != board.empty for cell in block_cells):
         completed += 1
 
     return completed
+
+
+def board_is_full(board):
+    N = board.N
+    for i in range(N):
+        for j in range(N):
+            if board.get((i, j)) == SudokuBoard.empty:
+                return False
+    return True
+
+def is_really_legal(game_state: GameState, move: Move, player_num: int) -> bool:
+    r, c = move.square
+
+    # Already occupied?
+    if game_state.board.get((r, c)) != 0:
+        return False
+
+    # Allowed square?
+    allowed = (
+        game_state.allowed_squares1 if player_num == 1
+        else game_state.allowed_squares2
+    )
+    if move.square not in allowed:
+        return False
+
+    # Taboo?
+    if TabooMove(move.square, move.value) in getattr(game_state, 'taboo_moves', []):
+        return False
+
+    return True
+
+def seed_board_with_N_values(game_state: GameState, agent1, agent2, N: int):
+    """
+    Adds exactly N legal values to the board before the episode starts.
+    Values are 1..N, each used once.
+    """
+    values = list(range(1, N + 1))
+    random.shuffle(values)
+
+    for v in values:
+        player_num = game_state.current_player
+        agent = agent1 if player_num == 1 else agent2
+
+        # Generate legal moves for THIS value only
+        raw_moves = agent.generate_legal_moves(game_state)
+        legal_moves = [
+            mv for mv in raw_moves
+            if mv.value == v and is_really_legal(game_state, mv, player_num)
+        ]
+
+        if not legal_moves:
+            # Skip this value if no legal placement exists
+            continue
+
+        move = random.choice(legal_moves)
+        game_state = agent._apply_move(game_state, move)
+
+        # Update occupied squares
+        if player_num == 1:
+            game_state.occupied_squares1.append(move.square)
+        else:
+            game_state.occupied_squares2.append(move.square)
+
+        # Alternate player
+        game_state.current_player = 3 - game_state.current_player
+
+    return game_state

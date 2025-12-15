@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 from .LDNet import LDNet
 
-MODEL_FILE = "./model/ldnet_state.pth"
+MODEL_FILE = "./team39_A2_LDLearning/model/ldnet_state.pth"
 
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     """
@@ -25,13 +25,13 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         self.model = LDNet(lr=5e-3, discount_rate=0.6)
 
         try:
-            self.model.load_state_dict(torch.load("./model/ldnet_state.pth", map_location="cpu"))
+            self.model.load_state_dict(torch.load(MODEL_FILE))
             logging.info("Loaded LDNet model from state_dict.")
         except Exception:
-            logging.info("No saved LDNet found — starting fresh.")
+            logging.info(F"No saved LDNet found — starting fresh. {MODEL_FILE}")
 
         self.model.eval()
-
+    
 
     # -----------------------------------------------------------
     # Move legality and generation
@@ -187,14 +187,55 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     # Minimax + alpha-beta
     # -----------------------------------------------------------
 
+    # def _minimax(self, state: GameState, depth, alpha, beta):
+    #     moves = self.generate_legal_moves(state)
+
+    #     if depth == 0 or not moves:
+    #         board_t, score_t = self.model.encode_state(state)
+    #         val = self.model.predict(board_t, score_t)
+    #         return val, None
+
+
+    #     maximizing = (state.current_player == 1)
+
+    #     if maximizing:
+    #         best_val = float("-inf")
+    #         best_move = None
+    #         for mv in moves:
+    #             child = self._apply_move(state, mv)
+    #             val, _ = self._minimax(child, depth - 1, alpha, beta)
+    #             if val > best_val:
+    #                 best_val = val
+    #                 best_move = mv
+    #             alpha = max(alpha, best_val)
+    #             if beta <= alpha:
+    #                 break
+    #         return best_val, best_move
+
+    #     else:  # minimizing
+    #         best_val = float("inf")
+    #         best_move = None
+    #         for mv in moves:
+    #             child = self._apply_move(state, mv)
+    #             val, _ = self._minimax(child, depth - 1, alpha, beta)
+    #             if val < best_val:
+    #                 best_val = val
+    #                 best_move = mv
+    #             beta = min(beta, best_val)
+    #             if beta <= alpha:
+    #                 break
+    #         return best_val, best_move
+        
     def _minimax(self, state: GameState, depth, alpha, beta):
+        '''
+        New version
+        '''
         moves = self.generate_legal_moves(state)
 
         if depth == 0 or not moves:
             board_t, score_t = self.model.encode_state(state)
-            val = self.model.predict(board_t, score_t)
+            val = self.model.predict(board_t, score_t)  # Neural network evaluation
             return val, None
-
 
         maximizing = (state.current_player == 1)
 
@@ -226,24 +267,29 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                     break
             return best_val, best_move
 
+
+
     # -----------------------------------------------------------
     # Interface for the competitive engine
     # -----------------------------------------------------------
+    def ensure_dir(self, path: str):
+        p = os.path.dirname(path)
+        if p and not os.path.exists(p):
+            os.makedirs(p, exist_ok=True)
 
     def compute_best_move(self, game_state: GameState) -> None:
-        logging.info("DLen Player turn")
-
+        
         if self.model is None:
-                if os.path.exists(MODEL_FILE):
+                if self.ensure_dir(MODEL_FILE):
                     try:
                         # Using state_dict (PyTorch recommended)
-                        self.model.load_state_dict(torch.load(MODEL_FILE, map_location="cpu"))
+                        self.model.load_state_dict(torch.load(MODEL_FILE))
                         logging.info(f"Loaded LDNet model from {MODEL_FILE}")
                     except Exception as e:
                         logging.error(f"Failed to load LDNet model: {e}")
                 else:
                     self.model = LDNet(lr=5e-3, discount_rate=0.6, device="cpu")
-                    logging.info("No existing model found; starting with a fresh LDNet")
+                    logging.info(f"No existing model found; starting with a fresh LDNet {MODEL_FILE}")
                 self.model.eval()  # evaluation mode
 
 
@@ -253,17 +299,16 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             return
 
         best_move = random.choice(legal)
-        logging.info("fallback move" + str(best_move))
         self.propose_move(best_move)
 
         try:
-            logging.info("Starting minimax")
             root_state = copy.deepcopy(game_state)
             depth = 2 # Depth 3 seems to be working better
             value, move = self._minimax(root_state, depth, float("-inf"), float("inf"))
             
             if move is not None:
                 best_move = move
+                logging.info(f)
                 self.propose_move(best_move)
 
         except Exception as e:
