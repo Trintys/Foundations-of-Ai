@@ -28,9 +28,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
 
     # Threat handling
     OPP_THREAT_SAMPLE = 80
-    THREAT_PENALTY = 12.0   # stronger than before (your logs show opponent getting 7 often)
+    THREAT_PENALTY = 12.0  
 
-    # Small nudges (don’t overdo, minimax should decide)
+    # Small nudges (no overdoing, minimax should decide)
     SELF_REWARD_BONUS = 1.0
     TERRITORY_BONUS = 0.15
 
@@ -38,9 +38,8 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         super().__init__()
         self.rng = random.Random()
 
-    # ============================================================
+
     # Legal move generation
-    # ============================================================
 
     def _valid_move(self, state: GameState, square: tuple, value: int) -> bool:
         board = state.board
@@ -85,9 +84,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
                     moves.append(Move(sq, v))
         return moves
 
-    # ============================================================
-    # Apply move (simulation)
-    # ============================================================
+
+    # Apply move 
+
 
     def _neighbors(self, board: SudokuBoard, square):
         N = board.N
@@ -153,9 +152,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         s.current_player = 3 - p
         return s
 
-    # ============================================================
+  
     # Evaluation
-    # ============================================================
+   
 
     def eval_p1(self, state: GameState) -> float:
         """Static evaluation from Player1's perspective."""
@@ -168,9 +167,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         """Convert eval_p1 into current player's perspective (for negamax)."""
         return self.eval_p1(state) if state.current_player == 1 else -self.eval_p1(state)
 
-    # ============================================================
+    
     # Threat + ordering heuristics (consistent with negamax)
-    # ============================================================
+    
 
     def _immediate_reward_if_played(self, state: GameState, move: Move) -> int:
         """Immediate points gained by this move (0/1/3/7), without mutating board."""
@@ -253,7 +252,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         if not moves:
             return []
 
-        # Compute heuristic scores (current player's perspective)
+        # Computation of heuristic scores (current player's perspective)
         scored = [(self.order_score(state, m), m) for m in moves]
         scored.sort(key=lambda x: x[0], reverse=True)  # higher is always better for side to move
 
@@ -265,12 +264,12 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             main += tail[:self.EXTRA_RANDOM]
             return main
 
-        # Otherwise, full expansion (important for small boards / endgame)
+        # Otherwise, full expansion (for small boards and endgame)
         return [m for (_, m) in scored]
 
-    # ============================================================
+    
     # Negamax alpha-beta
-    # ============================================================
+    
 
     def negamax(self, state: GameState, depth: int, alpha: float, beta: float, deadline: float):
         if time.time() >= deadline:
@@ -298,9 +297,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
 
         return best_val, best_move
 
-    # ============================================================
+    
     # Anytime compute_best_move (iterative deepening)
-    # ============================================================
+    
 
     def compute_best_move(self, game_state: GameState) -> None:
         legal = self.generate_legal_moves(game_state)
@@ -312,7 +311,7 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         self.propose_move(best)
 
         start = time.time()
-        deadline = start + 0.9  # safe slice (works even with small think-times)
+        deadline = start + 0.9  # safe slice (good even with small times)
 
         depth = 1
         last_best = best
